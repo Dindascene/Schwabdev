@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet
 _ENC_PREFIX = "enc:"
 
 class Tokens:
-    def __init__(self,app_key: str, app_secret: str, callback_url: str, logger: logging.Logger, tokens_db: str="~/.schwabdev/tokens.db", encryption: str=None, call_for_auth=None):
+    def __init__(self, app_key: str, app_secret: str, base_url: str, callback_url: str, logger: logging.Logger, tokens_db: str="~/.schwabdev/tokens.db", encryption: str=None, call_for_auth=None):
         """
         Initialize a tokens manager
 
@@ -57,6 +57,7 @@ class Tokens:
         #set private variables
         self._app_key = app_key                             # app key credential
         self._app_secret = app_secret                       # app secret credential
+        self._base_url = base_url                           # base API URL
         self._update_lock = threading.RLock()                # lock for token update operations
         self._callback_url = callback_url                   # callback url to use
         self._access_token_issued = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)  # datetime of access token issue
@@ -272,7 +273,7 @@ class Tokens:
                     'refresh_token': code}
         else:
             raise Exception("Invalid grant type; options are 'authorization_code' or 'refresh_token'")
-        return requests.post('https://api.schwabapi.com/v1/oauth/token', headers=headers, data=data, timeout=30)
+        return requests.post(f'{self._base_url}/v1/oauth/token', headers=headers, data=data, timeout=30)
 
 
     def update_tokens(self, force_access_token=False, force_refresh_token=False):
@@ -414,7 +415,7 @@ class Tokens:
                 self._conn.rollback() # release exclusive
                 return
 
-            auth_url = f'https://api.schwabapi.com/v1/oauth/authorize?client_id={self._app_key}&redirect_uri={self._callback_url}'
+            auth_url = f'{self._base_url}/v1/oauth/authorize?client_id={self._app_key}&redirect_uri={self._callback_url}'
 
             now = datetime.datetime.now(datetime.timezone.utc)
             if self._call_for_auth is not None and callable(self._call_for_auth):

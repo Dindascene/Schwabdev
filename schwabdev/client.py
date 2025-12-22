@@ -13,35 +13,75 @@ import aiohttp
 
 from .enums import TimeFormat
 from .tokens import Tokens
+from .urls import SCHWAB_API_URL, is_simschwab_url, is_valid_base_url
 
 
 class ClientBase:
 
-    _base_api_url = "https://api.schwabapi.com"
-
-    def __init__(self, app_key, app_secret, callback_url="https://127.0.0.1", tokens_db="~/.schwabdev/tokens.db", encryption=None, timeout=10, call_on_auth=None):
+    def __init__(self, app_key=None, app_secret=None, base_url=None, callback_url="https://127.0.0.1", tokens_db="~/.schwabdev/tokens.db", encryption=None, timeout=10, call_on_auth=None, static_token=None):
         """
         Initialize a client to access the Schwab API.
 
         Args:
-            app_key (str): App key credential.
-            app_secret (str): App secret credential.
-            callback_url (str): URL for callback.
-            tokens_db (str): Path to tokens file.
+            app_key (str): App key credential (required for production Schwab, ignored for SimSchwab).
+            app_secret (str): App secret credential (required for production Schwab, ignored for SimSchwab).
+            base_url (str): Base API URL. Must be schwabdev.SCHWAB_API_URL or http://localhost:<port> for SimSchwab.
+            callback_url (str): URL for callback (used only for OAuth flow).
+            tokens_db (str): Path to tokens file (used only for OAuth flow).
             timeout (int): Request timeout in seconds - how long to wait for a response.
-            use_session (bool): Use a requests session for requests instead of creating a new session for each request.
-            call_on_notify (function | None): Function to call when user needs to be notified (e.g. for input)
+            encryption (str): Encryption key for tokens file.
+            call_on_auth (function | None): Function to call for custom auth flow.
+            static_token (str | None): Static bearer token for SimSchwab (bypasses OAuth when provided).
         """
-
-        # other checks are done in the tokens class
+        if not is_valid_base_url(base_url):
+            raise ValueError(
+                f"[Schwabdev] Invalid base_url: {base_url}. "
+                f"Must be {SCHWAB_API_URL} or http://localhost:<port>"
+            )
         if timeout <= 0:
             raise Exception("Timeout must be greater than 0 and is recommended to be 5 seconds or more.")
 
-        self.version = "Schwabdev 3.0.1"                                    # version of the client
-        self.timeout = timeout                                              # timeout to use in requests
-        self.logger = logging.getLogger("Schwabdev")  # init the logger
-        self.tokens = Tokens(app_key, app_secret, callback_url, self.logger, tokens_db, encryption, call_on_auth)
-        self.tokens.update_tokens()                                               # ensure tokens are up to date on init
+        self._base_api_url = base_url
+        self.version = "Schwabdev 3.0.1"
+        self.timeout = timeout
+        self.logger = logging.getLogger("Schwabdev")
+
+        # Validate static_token + base_url combination and initialize appropriately
+        if static_token and is_simschwab_url(base_url):
+            # SimSchwab mode: skip OAuth entirely, use static token
+            self._static_token = static_token
+            self.tokens = None
+            self.logger.info("Initialized in SimSchwab mode with static token")
+        elif not static_token and base_url == SCHWAB_API_URL:
+            # Production mode: normal OAuth flow
+            if not app_key or not app_secret:
+                raise ValueError("[Schwabdev] app_key and app_secret are required for production Schwab API")
+            self._static_token = None
+            self.tokens = Tokens(app_key, app_secret, base_url, callback_url, self.logger, tokens_db, encryption, call_on_auth)
+            self.tokens.update_tokens()
+            self.logger.info("Initialized in production mode with OAuth")
+        elif static_token and not is_simschwab_url(base_url):
+            # static_token only allowed with localhost URLs
+            raise ValueError(
+                "[Schwabdev] static_token can only be used with SimSchwab (localhost) URLs"
+            )
+        else:
+            # SimSchwab URL without static_token
+            raise ValueError(
+                "[Schwabdev] SimSchwab URLs require static_token authentication"
+            )
+
+    def _get_access_token(self) -> str:
+        """
+        Get the current access token for API requests.
+
+        Returns:
+            str: Access token (either static token for SimSchwab or OAuth token for production)
+        """
+        if self._static_token:
+            return self._static_token
+        else:
+            return self.tokens.access_token
 
     def _parse_params(self, params: dict):
         """
@@ -111,8 +151,9 @@ class ClientBase:
             return l
     
     def _get_streamer_info(self):
-        self.tokens.update_tokens()
-        response = requests.request("GET", f'{self._base_api_url}/trader/v1/userPreference', headers={'Authorization': f'Bearer {self.tokens.access_token}'})
+        if self.tokens:
+            self.tokens.update_tokens()
+        response = requests.request("GET", f'{self._base_api_url}/trader/v1/userPreference', headers={'Authorization': f'Bearer {self._get_access_token()}'})
         if response.ok:
             return response.json().get('streamerInfo', None)[0]
         else:
@@ -121,34 +162,41 @@ class ClientBase:
 
 class Client(ClientBase):
 
-    def __init__(self, app_key:str, app_secret:str, callback_url:str="https://127.0.0.1", tokens_db: str="~/.schwabdev/tokens.db", encryption:str=None, timeout:int=10, call_on_auth:callable=None):
+    def __init__(self, app_key:str=None, app_secret:str=None, base_url:str=None, callback_url:str="https://127.0.0.1", tokens_db: str="~/.schwabdev/tokens.db", encryption:str=None, timeout:int=10, call_on_auth:callable=None, static_token:str=None):
         """
         Initialize a client to access the Schwab API.
 
         Args:
-            app_key (str): App key credential.
-            app_secret (str): App secret credential.
-            callback_url (str): URL for callback.
-            tokens_db (str): Path to tokens file.
+            app_key (str): App key credential (required for production Schwab, ignored for SimSchwab).
+            app_secret (str): App secret credential (required for production Schwab, ignored for SimSchwab).
+            base_url (str): Base API URL. Must be schwabdev.SCHWAB_API_URL or http://localhost:<port> for SimSchwab.
+            callback_url (str): URL for callback (used only for OAuth flow).
+            tokens_db (str): Path to tokens file (used only for OAuth flow).
             timeout (int): Request timeout in seconds - how long to wait for a response.
+            encryption (str): Encryption key for tokens file.
             call_on_auth (function | None): Function to call for custom auth flow.
+            static_token (str | None): Static bearer token for SimSchwab (bypasses OAuth when provided).
         """
-        super().__init__(app_key, app_secret, callback_url, tokens_db, encryption, timeout, call_on_auth)
+        super().__init__(app_key, app_secret, base_url, callback_url, tokens_db, encryption, timeout, call_on_auth, static_token)
 
-        self._session = requests.Session()                                  # session to use in requests
-        self._session.headers.update({'Authorization': f'Bearer {self.tokens.access_token}'})
+        self._session = requests.Session()
+        self._session.headers.update({'Authorization': f'Bearer {self._get_access_token()}'})
         self._session_lock = threading.RLock()
 
     def update_tokens(self, force_access_token:bool=False, force_refresh_token:bool=False) -> bool:
         """
-        Update tokens if needed.
+        Update tokens if needed. No-op for SimSchwab mode (static token).
 
         Returns:
             bool: True if tokens were updated, False otherwise.
         """
+        # Static token mode: no token refresh needed
+        if self._static_token:
+            return False
+
         if self.tokens.update_tokens(force_access_token, force_refresh_token):
             with self._session_lock:
-                self._session.headers['Authorization'] = f'Bearer {self.tokens.access_token}'
+                self._session.headers['Authorization'] = f'Bearer {self._get_access_token()}'
             return True
         else:
             return False
@@ -577,26 +625,45 @@ class Client(ClientBase):
 
 class ClientAsync(ClientBase):
 
-    def __init__(self, app_key:str, app_secret:str, callback_url:str="https://127.0.0.1", tokens_db: str="~/.schwabdev/tokens.db", encryption:str=None, timeout:int=10, call_on_auth:callable=None, parsed: bool = False,):
+    def __init__(self, app_key:str=None, app_secret:str=None, base_url:str=None, callback_url:str="https://127.0.0.1", tokens_db: str="~/.schwabdev/tokens.db", encryption:str=None, timeout:int=10, call_on_auth:callable=None, static_token:str=None, parsed: bool = False):
+        """
+        Initialize an async client to access the Schwab API.
+
+        Args:
+            app_key (str): App key credential (required for production Schwab, ignored for SimSchwab).
+            app_secret (str): App secret credential (required for production Schwab, ignored for SimSchwab).
+            base_url (str): Base API URL. Must be schwabdev.SCHWAB_API_URL or http://localhost:<port> for SimSchwab.
+            callback_url (str): URL for callback (used only for OAuth flow).
+            tokens_db (str): Path to tokens file (used only for OAuth flow).
+            timeout (int): Request timeout in seconds - how long to wait for a response.
+            encryption (str): Encryption key for tokens file.
+            call_on_auth (function | None): Function to call for custom auth flow.
+            static_token (str | None): Static bearer token for SimSchwab (bypasses OAuth when provided).
+            parsed (bool): Whether to parse responses automatically.
+        """
         if aiohttp is None:
             raise ImportError("aiohttp is required to use ClientAsync")
-        super().__init__(app_key, app_secret, callback_url, tokens_db, encryption, timeout, call_on_auth)
+        super().__init__(app_key, app_secret, base_url, callback_url, tokens_db, encryption, timeout, call_on_auth, static_token)
         self._parsed = parsed
         self._session = aiohttp.ClientSession(base_url=self._base_api_url,
-                                              headers={'Authorization': f'Bearer {self.tokens.access_token}'}, 
+                                              headers={'Authorization': f'Bearer {self._get_access_token()}'},
                                               timeout=aiohttp.ClientTimeout(total=self.timeout))
         self._session_lock = threading.RLock()
-        
+
     def update_tokens(self, force_access_token:bool=False, force_refresh_token:bool=False) -> bool:
         """
-        Update tokens if needed.
+        Update tokens if needed. No-op for SimSchwab mode (static token).
 
         Returns:
             bool: True if tokens were updated, False otherwise.
         """
+        # Static token mode: no token refresh needed
+        if self._static_token:
+            return False
+
         if self.tokens.update_tokens(force_access_token, force_refresh_token):
             with self._session_lock:
-                self._session.headers['Authorization'] = f'Bearer {self.tokens.access_token}'
+                self._session.headers['Authorization'] = f'Bearer {self._get_access_token()}'
             return True
         else:
             return False
