@@ -118,6 +118,20 @@ class Tokens:
     def __del__(self):
         self._close()
 
+    def get_refresh_token_expiry(self) -> tuple[datetime.datetime, datetime.timedelta]:
+        """
+        Get refresh token expiry information.
+
+        Returns:
+            tuple: (expiry_datetime, time_remaining)
+                - expiry_datetime: When the refresh token expires (UTC)
+                - time_remaining: timedelta until expiry (negative if expired)
+        """
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expiry = self._refresh_token_issued + datetime.timedelta(seconds=self._refresh_token_timeout)
+        remaining = expiry - now
+        return expiry, remaining
+
     def _enc(self, s: str) -> str:
         if not self._cipher_suite:
             return s
